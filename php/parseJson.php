@@ -34,6 +34,7 @@
 	$output['status']['returnedIn'] = (microtime(true) - $executionStartTime) / 1000 . " ms";
     $output['data'] = $countryArr;
 
+
     $output = json_encode($output);
     echo $output;
 
