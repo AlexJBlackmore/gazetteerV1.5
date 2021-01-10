@@ -1,110 +1,743 @@
-let countryFeatureGroup;
-let myMap;
+let map;
+let borderFeatureGroup;
+let earthquakesClusterGroup;
+let wikisClusterGroup;
+let POIsClusterGroup;
+let popup;
+let json;
 
-$(window).on('load', function () {   
-    if ($('#preloader').length) {      
+$(window).on('load', async function () {   
+	
+	// Hide spinner if div loaded
+	if ($('#preloader').length) {      
 		$('#preloader').delay(100).fadeOut('slow', function () {        
 			$(this).remove();      
 		});    
-    }
-    
-    // Populate country selector
+	}
+	
+	// Create map
+	const attribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+    const tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+	map = L.map('mapid').setView([40, 0], 3);
+	L.tileLayer(tileUrl, { minZoom: 3, noWrap: true, attribution: attribution}).addTo(map);
+
+	// Set max bounds of map so that you can't see grey space
+	const southWest = L.latLng(-89.98155760646617, -180);
+	const northEast = L.latLng(89.99346179538875, 180);
+	const bounds = L.latLngBounds(southWest, northEast);
+	map.setMaxBounds(bounds);
+	map.on('drag', function() {
+		map.panInsideBounds(bounds, { animate: false });
+	});
+
+	// Populate country selector
 	$.ajax({
 		url: "./php/parseJson.php",
 		dataType: 'json',
 		success: function(result) {
-			console.log(result);
 			for (i = 0; i < result['data'].length; i++) {
-				$('#countrySelect').append($('<option>', {value:result['data'][i]['isoCode'], text:result['data'][i]['name'] + ' - ' + result['data'][i]['isoCode']}));
+				$('#countrySelect').append($('<option>', {value:result['data'][i]['isoCode'], text:result['data'][i]['name']}));
 			}
 		},
 		error: function(jqXHR, textStatus, errorThrown) {
-			alert("The following error occured: " + jqXHR.status + " " + textStatus);
+			alert("ParseJSON - the following error occured: " + jqXHR.status + " " + textStatus);
 		}
-    }); 
-    
-    // Create map
-    myMap = L.map('mapid');
-    const attribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
-    const tileUrl = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-	// const tiles = L.tileLayer(tileUrl, { attribution });
-	const tiles = L.tileLayer(tileUrl, { 
-		minZoom: 3,
-		noWrap: true, 
-		attribution: attribution});
-    tiles.addTo(myMap);
-	// End of create map
-	
-
-	const southWest = L.latLng(-89.98155760646617, -180);
-	const northEast = L.latLng(89.99346179538875, 180);
-	const bounds = L.latLngBounds(southWest, northEast);
-
-	myMap.setMaxBounds(bounds);
-	myMap.on('drag', function() {
-		myMap.panInsideBounds(bounds, { animate: false });
 	});
 
-	// markersClusterGroup = L.markerClusterGroup();
+	// Set options for geting user location
+	const options = {
+		enableHighAccuracy: true,
+		timeout: 20000,
+		maximumAge: 0
+	};
 
+	// Get user location
+	navigator.geolocation.getCurrentPosition(getPosSuccess, getPosError, options);
 
-    // Button 
-    L.easyButton('fa-info', async function(btn, map){
-		// helloPopup.setLatLng(map.getCenter()).openOn(map);
-		let borderGeoJson = await getBorder($('#countrySelect').val());
-		plotBorder(borderGeoJson);
-        $("#myModal").modal({backdrop: false});
-	},'Show country info').addTo(myMap);
+	// Set on change/click handlers
+	$('#countrySelect').on('change', changeCountry);
+	$('#teamsSelect').on('change', teamSelectChange);
+	$('#closeTeamsBtn').on('click', clearTeam);
+	$('#howToUse').on('click', displayHowToUse);
+
+	// Hide the spinner in the teamsModal
+	$('#teamsSpinner').hide();
 	
-	// Button 
-    L.easyButton('fa-wikipedia-w', getWiki,'Find Wiki articles near map center').addTo(myMap);
+	// Add buttons to map
+	L.easyButton('fa-camera', displayImages,'View photos of this country').addTo(map);
+	L.easyButton('fa-temperature-low', displayTemperatures,'View monthly temperature variation in this country').addTo(map);
+	L.easyButton('fa-futbol', displayTeams,'View football teams in this country').addTo(map);
+	L.easyButton('fa-cloud-sun', displayCapitalWeather,'View the weather at the capital of this country').addTo(map);
+	L.easyButton('fa-info', showCountryInfoModal,'View information about this country').addTo(map);
 
-	// Button 
-    L.easyButton('fa-globe', getEarthquakes,'Find earthquakes near map center').addTo(myMap);
+	// Create pop up for the on map click and set the click handler
+	popup = L.popup();
+	map.on('click', onMapClick);
 
-	// Button 
-    L.easyButton('fa-map-marker-alt', getPOI,'Find points of interest near map center').addTo(myMap);
-
-    // Set options for geting user location
-    const options = {
-        enableHighAccuracy: true,
-        timeout: 5000,
-        maximumAge: 0
-    };
-
-    // Get user location
-    navigator.geolocation.getCurrentPosition(success, error, options);
-
-    // On click show popup
-    popup = L.popup();
-    myMap.on('click', onMapClick);
-
-    // Change selector
-    $('#countrySelect').on('change', changeBorder);
 });
 
+// Function called when select is changed
+async function changeCountry() {
+	map.spin(true);
+
+	// Get isoCode from select
+	const isoCode = $('#countrySelect').val();
+	
+	// Call APIs with it
+	const data = await getBorderAndCountryInfoIso(isoCode);
+
+	// Remove existing clustergroups
+	if(earthquakesClusterGroup){
+        map.removeLayer(earthquakesClusterGroup);
+	}
+	if(wikisClusterGroup){
+        map.removeLayer(wikisClusterGroup);
+	}
+
+	plotBorder(data);
+	displayModal(data);
+	showCapitalWeather(data['capital']['coord']);
+
+	const wikisData = await callWikisAPI(data['countryInfo'][0]);
+	addWikiMarkers(wikisData);
+
+	const earthquakesData = await callEarthquakesAPI(data['countryInfo'][0]);
+	addEarthquakeMarkers(earthquakesData);
+	
+	map.spin(false);
+}
+
+// Function to get earthquakes
+// In a separate call to other API calls because it takes longer
+// This call can run in background while user is busy looking at modal
+function callEarthquakesAPI(countryInfo) {
+	const north = countryInfo['north'];
+	const south = countryInfo['south'];
+	const east = countryInfo['east'];
+	const west = countryInfo['west'];
+	const isoCode = countryInfo['countryCode'];
+
+	return new Promise((resolve, reject) => {
+		$.ajax({
+			url: "./php/callEarthquakesAPI.php",
+			type: 'POST',
+			dataType: 'json',
+			data: {
+				north: north,
+				south: south,
+				east: east,
+				west: west,
+				isoCode: isoCode
+			},
+			success: function(result) {
+				// This will set the promise state to fulfilled 
+				// and set the promise value to the result of the isoCode
+				resolve(result['data']);
+			},
+			error: function(jqXHR, textStatus, errorThrown) {
+				
+			}
+		}); 
+	});
+}
+
+function callFootballAPI(isoCode) {
+	return new Promise((resolve, reject) => {
+		$.ajax({
+			url: "./php/callFootballAPI.php",
+			type: 'POST',
+			dataType: 'json',
+			data: {
+				isoCode: isoCode
+			},
+			success: function(result) {
+				// This will set the promise state to fulfilled 
+				// and set the promise value to the result of the isoCode
+				resolve(result['data']);
+			},
+			error: function(jqXHR, textStatus, errorThrown) {
+				
+			}
+		}); 
+	});
+}
+
+function callWikisAPI(countryInfo) {
+	const north = countryInfo['north'];
+	const south = countryInfo['south'];
+	const east = countryInfo['east'];
+	const west = countryInfo['west'];
+	const isoCode = countryInfo['countryCode'];
+
+	return new Promise((resolve, reject) => {
+		$.ajax({
+			url: "./php/callWikisAPI.php",
+			type: 'POST',
+			dataType: 'json',
+			data: {
+				north: north,
+				south: south,
+				east: east,
+				west: west,
+				isoCode: isoCode
+			},
+			success: function(result) {
+				// This will set the promise state to fulfilled 
+				// and set the promise value to the result of the isoCode
+				resolve(result['data']);
+			},
+			error: function(jqXHR, textStatus, errorThrown) {
+				
+			}
+		}); 
+	});
+}
+
+// Plot border function
+function plotBorder(data) {
+	
+	// Variable for border geojson
+	const border = data['border'];
+	// borderFeatureGroup is defined at start of file (global)
+	// If border already set then remove
+	if(borderFeatureGroup){
+        map.removeLayer(borderFeatureGroup);
+	}
+	// Set borderFeaturegroup to the geoJson and pan to that area
+    borderFeatureGroup = L.geoJSON(border).addTo(map);
+	map.fitBounds(borderFeatureGroup.getBounds());
+}
+
+async function showCountryInfoModal() {
+	map.spin(true);
+	const isoCode = $('#countrySelect').val()
+	const data = await getBorderAndCountryInfoIso(isoCode);
+	displayModal(data);
+	map.spin(false);
+}
+
+// Pop up modal function
+function displayModal(data) {
+	// Extract values from response into variables
+	const countryName = data['countryInfo'][0]['countryName'];
+	const capital = data['countryInfo'][0]['capital'];
+	const population = data['countryInfo'][0]['population'];
+	const area = data['countryInfo'][0]['areaInSqKm'];
+	const languages = data['countryInfo'][0]['languages'];
+	const isoCode = data['countryInfo'][0]['countryCode'];
+	// Use currency code as fallback value for currency
+	let currency = data['countryInfo'][0]['currencyCode'];
+	// Use values from currency property if possible
+	if(data['currency']) {
+		currency = `${data['currency']['name']} (${data['currency']['symbol']})`;
+	}
+
+	// Set modal html
+	$('#modalTitle').html(countryName);
+	$('#capitalCell').html(capital);
+	$('#currencyCell').html(currency);
+	$('#populationCell').html(new Intl.NumberFormat('en-GB', { maximumSignificantDigits: 3 }).format(population));
+	$('#areaCell').html(new Intl.NumberFormat('en-GB', { maximumSignificantDigits: 3 }).format(area));
+	$('#languagesCell').html(languages);
+	$('#countryFlag').attr('src', `https://www.countryflags.io/${isoCode}/flat/64.png`);
+
+	// Trigger modal
+	$("#myModal").modal({backdrop: false});
+}
+
+// Populate modal and display
+async function displayImages() {
+	const countryName = $("#countrySelect option:selected").text();
+	const picturesData = await callPicturesAPI(countryName);
+
+	$('#imagesModalTitle').html(countryName);
+
+	$("#slide1").attr("src", picturesData['pictures']['hits'][0]['largeImageURL']);
+	$("#slide2").attr("src", picturesData['pictures']['hits'][1]['largeImageURL']);
+	$("#slide3").attr("src", picturesData['pictures']['hits'][2]['largeImageURL']);
+	$("#slide4").attr("src", picturesData['pictures']['hits'][3]['largeImageURL']);
+	$("#slide5").attr("src", picturesData['pictures']['hits'][4]['largeImageURL']);
+
+	$('#imagesModal').modal({backdrop: false});
+}
+
+// Add Earthquake markers function
+function addEarthquakeMarkers(earthquakesData) {
+
+	// Variable to store earthquakes array
+	let earthquakes = null;
+	// Length of array
+	let earthquakesLength = null;
+
+	// First check if there are actually earthquakes in the response
+	if(earthquakesData['earthquakes']){
+		earthquakes = earthquakesData['earthquakes'];
+		earthquakesLength = earthquakes.length
+
+		// Create array for all coords of earthquakes
+		let earthquakesCoords = [];
+		// Create a clusergroup for earthquakes
+		earthquakesClusterGroup = L.markerClusterGroup();
+
+		for(i = 0; i < earthquakesLength; i++) {
+			
+			// Extract values from each earthquake in earthquakes API call
+			const lat = earthquakes[i]['lat'];
+			const lng = earthquakes[i]['lng'];
+			const date = earthquakes[i]['datetime'].substring(0, 10);
+			const time = earthquakes[i]['datetime'].substring(11, 19);
+			const depth = earthquakes[i]['depth'];
+			const magnitude = earthquakes[i]['magnitude'];
+
+			// Add lat lng to coords array
+			earthquakesCoords[i] = [lat, lng];
+
+			// Create markers and add content
+			const earthquakeIcon = L.ExtraMarkers.icon({
+				icon: 'fa-bolt',
+				iconColor: 'white',
+				markerColor: 'orange-dark',
+				shape: 'square',
+				prefix: 'fa'
+			});
+			const marker = L.marker([lat, lng], {icon: earthquakeIcon});
+
+			const html = `<div class="card-body">
+				<h5 class="card-title text-center">There was an earthquake here!</h5>
+				<br><h3 class="card-subtitle mb-2 text-center">${magnitude} magnitude</h3>
+				<h3 class="card-subtitle mb-2 text-center">${depth}km depth</h3>
+				<br><h6 class="card-subtitle mb-2 text-muted text-center">At <strong>${time}</strong> on  <strong>${date}</strong></h6>
+				<p class="card-text text-center">This location is ${lat.toFixed(4).toString()}, ${lng.toFixed(4).toString()}. 
+					Learn more about how earthquakes are recorded
+					<a href="https://www.usgs.gov/natural-hazards/earthquake-hazards/science/science-earthquakes?qt-science_center_objects=0#qt-science_center_objects" target="_blank">here.</a></p>
+			</div>`;
+
+			// Bind html to popup
+			marker.bindPopup(html);
+			// Assign pop up onclick listener
+			marker.on('click', onClick);
+			// Add marker to cluster group
+			earthquakesClusterGroup.addLayer(marker);
+		}
+
+		// Add cluster group to map
+		map.addLayer(earthquakesClusterGroup);
+	}
+}
+
+// Add Wiki markers function
+function addWikiMarkers(data) {
+	// Variable to store wikis array
+	let wikis = null;
+	// Length of array
+	let wikisLength = null;
+	// First check if there are actually earthquakes in the response
+	if(data['wikis']){
+		wikis = data['wikis'];
+		wikisLength = wikis.length
+
+		// Create array for all coords of earthquakes
+		let wikisCoords = [];
+		// Create a clusergroup for earthquakes
+		wikisClusterGroup = L.markerClusterGroup();
+
+		for(i = 0; i < wikisLength; i++) {
+			// Extract values from each earthquake in earthquakes API call
+			const lat = wikis[i]['lat'];
+			const lng = wikis[i]['lng'];
+			const summary = wikis[i]['summary'];
+			const title = wikis[i]['title'];
+			const wikiUrl = wikis[i]['wikipediaUrl'];
+			const wikiImage = wikis[i]['thumbnailImg'];
+
+			// Add lat lng to coords array
+			wikisCoords[i] = [lat, lng];
+
+			// Create markers
+			const wikiIcon = L.ExtraMarkers.icon({
+				icon: 'fa-binoculars',
+				iconColor: 'white',
+				markerColor: 'blue',
+				shape: 'square',
+				prefix: 'fa'
+			});
+			const marker = L.marker([lat, lng], {icon: wikiIcon});
+
+			// Html to be included in pop up
+			let html;
+			if(wikiImage) {
+				html = `<div class="card-body">
+					<h3 class="card-subtitle mb-2 text-center">${title}</h3>
+					<p class="text-center">${summary}</p>
+					<div style="text-align: center">
+					<img src="${wikiImage}" alt="${summary}" class="img-fluid"/>
+					<br>
+					<br>
+					<a href="https://${wikiUrl}">View Wikipedia article</a>
+					</div>
+				</div>`;
+			} else {
+				html = `<div class="card-body">
+					<h3 class="card-subtitle mb-2 text-center">${title}</h3>
+					<p class="text-center">${summary}</p>
+					<div style="text-align: center">
+					<br>
+					<br>
+					<a href="https://${wikiUrl}">View Wikipedia article</a>
+					</div>
+				</div>`;
+			}
+
+			// Bind html to popup
+			marker.bindPopup(html);
+			// Assign pop up onclick listener
+			marker.on('click', onClick);
+			// Add marker to cluster group
+			wikisClusterGroup.addLayer(marker);
+		}
+
+		// Add cluster group to map
+		map.addLayer(wikisClusterGroup);
+	}
+}
+
+// Marker onclick function
+function onClick(e) {
+	e.target.getPopup().openOn(map);
+}
 
 // Navigator success handler
-function success(pos) {
+async function getPosSuccess(pos) {
+	map.spin(true);
+		
+	// Make a variable for coords
 	const crd = pos.coords;
-	console.log('Your current position is:');
-	console.log(`Latitude : ${crd.latitude}`);
-	console.log(`Longitude: ${crd.longitude}`);
-	console.log(`More or less ${crd.accuracy} meters.`);
 	
-	initPage(crd.latitude, crd.longitude);
+	// Call the APIs
+	const data = await getBorderAndCountryInfoLatLng(crd.latitude, crd.longitude);
+
+	$("#countrySelect").val(data['isoCode']);
+
+	plotBorder(data);
+	displayModal(data);
+
+	showCapitalWeather(data['capital']['coord']);
+
+	const wikisData = await callWikisAPI(data['countryInfo'][0]);
+	addWikiMarkers(wikisData);
+
+	const earthquakesData = await callEarthquakesAPI(data['countryInfo'][0]);
+	addEarthquakeMarkers(earthquakesData);
+
+	map.spin(false);
 }
 
 // Navigator error handler
-function error(err) {
-	console.warn(`ERROR(${err.code}): ${err.message}`);
+async function getPosError(err) {
+	map.spin(true);
+
+	// Use GB as default if no user location provided
+	const data = await getBorderAndCountryInfoIso('GB');
+
+	$("#countrySelect").val(data['isoCode']);
+	
+	plotBorder(data);
+	displayModal(data);
+	showCapitalWeather(data['capital']['coord']);
+
+	const wikisData = await callWikisAPI(data['countryInfo'][0]);
+	addWikiMarkers(wikisData);
+
+	const earthquakesData = await callEarthquakesAPI(data['countryInfo'][0]);
+	addEarthquakeMarkers(earthquakesData);
+
+	map.spin(false);
 }
 
-// Get user location isoCode
-function getUserLocIso(lat, lng) {
+// callPicturesAPI function
+function callPicturesAPI(countryName) {
 	return new Promise((resolve, reject) => {
 		$.ajax({
-			url: "./php/getIsoCode.php",
+			url: "./php/callPicturesAPI.php",
+			type: 'POST',
+			dataType: 'json',
+			data: {
+				countryName: countryName
+			},
+			success: function(result) {
+				// This will set the promise state to fulfilled 
+				// and set the promise value to the result of the isoCode
+				resolve(result['data']);
+			},
+			error: function(jqXHR, textStatus, errorThrown) {
+			}
+		}); 
+	});
+}
+
+
+
+
+
+
+
+
+
+// Populate modal and display
+async function displayTeams() {
+	map.spin(true);
+	const isoCode = $("#countrySelect").val();
+	const data = await callFootballAPI(isoCode);
+
+	let teamsData = [];
+	let teamNames = [];
+
+	// Requires loop in a loop because some responses have multiple countries
+	// Eg United Kingdom contains England, Scotland, Wales, Northern Ireland
+	for(i = 0; i < data['football'].length; i++) {
+		
+		const teamsArray = data['football'][i]['response'];
+
+		for(j = 0; j < teamsArray.length; j++) {
+			teamsData.push({
+				"teamName": teamsArray[j]['team']['name'],
+				"teamCountry": teamsArray[j]['team']['country'],
+				"teamLogo": teamsArray[j]['team']['logo'],
+				"founded": teamsArray[j]['team']['founded'],
+				"address": teamsArray[j]['venue']['address'],
+				"capacity": teamsArray[j]['venue']['capacity'],
+				"image": teamsArray[j]['venue']['image'],
+				"venueName": teamsArray[j]['venue']['name'],
+				"city": teamsArray[j]['venue']['city']
+			});
+
+			teamNames.push(teamsArray[j]['team']['name']);
+		}
+	}
+	
+	// Sort the teamNames before adding to the select
+	teamNames.sort();
+	for(i = 0; i < teamNames.length; i++) {
+		$('#teamsSelect').append($('<option>', {value:teamNames[i], text:teamNames[i]}));
+	}
+
+	if(teamsData.length == 0) {
+		$('#teamLogo').hide();
+		$('#stadiumImage').hide();
+		$('#teamsSelect').hide();
+		$('#foundedIn').html('No teams found for this country. Try selecting a different one.');
+	}
+
+	// Set the initially selected team as the first one with images
+	for(i = 0; i < teamsData.length; i++) {
+		if(teamsData[i]['image'] && teamsData[i]['teamLogo'] && teamsData[i]['founded'] && teamsData[i]['venueName'] && teamsData[i]['teamName']) {
+			$("#teamLogo").attr("src", teamsData[i]['teamLogo']);
+			$("#stadiumImage").attr("src", teamsData[i]['image']);
+			$('#teamName').html(teamsData[i]['teamName']);
+			$('#foundedIn').html(`This club was founded in ${teamsData[i]['founded']} and currently play at: <strong>${teamsData[i]['venueName']}.</strong>`);
+			$("#teamsSelect").val(teamsData[i]['teamName']);
+			break;
+		}
+	}
+
+	// Set the modal title
+	$('#teamsModalTitle').html(`Football teams in ${$("#countrySelect option:selected").text()}`);
+
+	$('#teamsModal').modal({backdrop: false});
+	map.spin(false);
+}
+
+function clearTeam() {
+	// Clear the team selector
+	$("#teamsSelect").empty();
+	// Empty the existing card
+	$("#teamLogo").attr("src", '');
+	$("#stadiumImage").attr("src", '');
+	$('#teamName').html('');
+	$('#foundedIn').html('');
+
+	$("#teamsSelect").show();
+	$("#teamLogo").show();
+	$("#stadiumImage").show();
+	$('#teamName').show();
+	$('#foundedIn').show();
+
+}
+
+// Team select on change
+async function teamSelectChange() {
+	$('#teamsSpinner').show();
+	$("#teamLogo").attr("src", '');
+	$("#teamLogo").attr("alt", '');
+	$("#teamLogo").hide();
+	$("#stadiumImage").hide();
+	$("#stadiumImage").attr("src", '');
+	$("#stadiumImage").attr("alt", '');
+	$('#teamName').html('');
+	$('#foundedIn').html('');
+	
+	const isoCode = $("#countrySelect").val();
+	const data = await callFootballAPI(isoCode);
+
+	let teamsData = [];
+	let teamNames = [];
+
+	// Requires loop in a loop because some responses have multiple countries
+	// Eg United Kingdom contains England, Scotland, Wales, Northern Ireland
+	for(i = 0; i < data['football'].length; i++) {
+		
+		const teamsArray = data['football'][i]['response'];
+
+		for(j = 0; j < teamsArray.length; j++) {
+			teamsData.push({
+				"teamName": teamsArray[j]['team']['name'],
+				"teamCountry": teamsArray[j]['team']['country'],
+				"teamLogo": teamsArray[j]['team']['logo'],
+				"founded": teamsArray[j]['team']['founded'],
+				"address": teamsArray[j]['venue']['address'],
+				"capacity": teamsArray[j]['venue']['capacity'],
+				"image": teamsArray[j]['venue']['image'],
+				"venueName": teamsArray[j]['venue']['name'],
+				"city": teamsArray[j]['venue']['city']
+			});
+
+			teamNames.push(teamsArray[j]['team']['name']);
+		}
+	}
+	$('#teamsSpinner').hide();
+
+	for(i=0; i < teamsData.length; i++) {
+		if($('#teamsSelect').val() == teamsData[i]['teamName']) {
+			const image = teamsData[i]['image'];
+			const teamLogo = teamsData[i]['teamLogo'];
+			const founded = teamsData[i]['founded'];
+			const venueName = teamsData[i]['venueName'];
+			const teamName = teamsData[i]['teamName'];
+			const imgNotAvail = 'https://media.api-sports.io/football/teams/8735.png';
+			const imgNotAvail2 = 'https://media.api-sports.io/football/venues/7437.png';
+			const imgNotAvail3 = 'https://media.api-sports.io/football/venues/7754.png';
+			const imgNotAvail4 = 'https://media.api-sports.io/football/venues/4946.png';
+			const imgNotAvail5 = 'https://media.api-sports.io/football/teams/6736.png';
+			const imgNotAvail6 = 'https://media.api-sports.io/football/teams/11335.png';
+			const imgNotAvail7 = 'https://media.api-sports.io/football/teams/8771.png';
+			const imgsNotAvail = [imgNotAvail, imgNotAvail2, imgNotAvail3, imgNotAvail4, imgNotAvail5, imgNotAvail6, imgNotAvail7];
+			
+			$("#teamLogo").show();
+			$("#stadiumImage").show();
+			$('#teamName').html(teamsData[i]['teamName']);
+			$("#teamLogo").attr("src", teamLogo);
+			$("#stadiumImage").attr("src", image);
+			$('#foundedIn').html(`This club was founded in ${founded} and currently play at: <strong>${venueName}.</strong>`);
+			
+
+			if(!image || imgsNotAvail.includes(image)) {
+				$("#stadiumImage").hide();
+				$("#stadiumImage").attr("alt", '');
+			}
+
+			if(!teamLogo || imgsNotAvail.includes(teamLogo)) {
+				$("#teamLogo").hide();
+				$("#teamLogo").attr("alt", '');
+			}
+
+			if(founded && venueName) {
+				$('#foundedIn').html(`This club was founded in ${founded} and currently play at: <strong>${venueName}.</strong>`);
+			}
+
+			if(!founded && venueName) {
+				$('#foundedIn').html(`This club currently play at: <strong>${venueName}.</strong>`);
+			}
+
+			if(founded && !venueName) {
+				$('#foundedIn').html(`This club was founded in ${founded}.`);
+			}
+
+			if(!founded && !venueName) {
+				$('#foundedIn').html(`There is not much information about this club. Try selecting another.`);
+			}
+		}
+	}
+}
+
+
+
+
+// Pictures API has to be GET not POST
+function callTemperaturesAPI(isoCode) {
+	return new Promise((resolve, reject) => {
+		$.ajax({
+			url: "./php/callTemperaturesAPI.php",
+			type: 'GET',
+			dataType: 'json',
+			data: {
+				isoCode: isoCode
+			},
+			success: function(result) {
+				// This will set the promise state to fulfilled 
+				// and set the promise value to the result of the isoCode
+				resolve(result['data']);
+			},
+			error: function(jqXHR, textStatus, errorThrown) {
+				
+			}
+		}); 
+	});
+}
+
+// Populate modal and display
+async function displayTemperatures() {
+	map.spin(true);
+	const isoCode = $("#countrySelect").val();
+	const temperaturesData = await callTemperaturesAPI(isoCode);
+
+	let temperatures = [];
+	let months = [];
+	const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+	for(i = 0; i < temperaturesData['temperatures'][0]['monthVals'].length; i++) {
+		temperatures[i] = temperaturesData['temperatures'][0]['monthVals'][i];
+		months[i] = monthNames[i];
+	}
+
+	var ctx = document.getElementById('temperaturesChart').getContext('2d');
+	var myChart = new Chart(ctx, {
+		type: 'line',
+		data: {
+			labels: months,
+			datasets: [{
+				label: 'Month average',
+				data: temperatures,
+				fill: false,
+				backgroundColor: 'rgba(220,180,0,1)',
+				borderColor: 'rgba(220,180,0,1)',
+				borderWidth: 1
+			}]
+		},
+		options: {
+			scales: {
+				yAxes: [{
+					ticks: {
+						beginAtZero: true
+					}, 
+					scaleLabel: {
+						display: true,
+						labelString: 'Celcius'
+					}
+				}]
+			}
+		}
+	});
+
+	$('#temperaturesModalTitle').html(`${$("#countrySelect option:selected").text()} climate`);
+	$('#temperaturesModal').modal({backdrop: false});
+	map.spin(false);
+}
+
+// callAPIs can take lat lng as params or isoCode
+function getBorderAndCountryInfoLatLng(lat, lng) {
+	return new Promise((resolve, reject) => {
+		$.ajax({
+			url: "./php/getBorderAndCountryInfo.php",
 			type: 'POST',
 			dataType: 'json',
 			data: {
@@ -112,546 +745,136 @@ function getUserLocIso(lat, lng) {
 				lng: lng
 			},
 			success: function(result) {
-				console.log(result);
 				// This will set the promise state to fulfilled 
 				// and set the promise value to the result of the isoCode
 				resolve(result['data']);
 			},
 			error: function(jqXHR, textStatus, errorThrown) {
-				alert("The following error occured: " + jqXHR.status + " " + textStatus);
 			}
 		}); 
-
 	});
 }
 
-// Get country info
-function getCountryInfo(isoCode) {
+//callAPIs can take lat lng as params or isoCode
+function getBorderAndCountryInfoIso(isoCode) {
 	return new Promise((resolve, reject) => {
 		$.ajax({
-			url: "./php/getCountryInfo.php",
+			url: "./php/getBorderAndCountryInfo.php",
 			type: 'POST',
 			dataType: 'json',
 			data: {
-				lang: 'en',
-				country: isoCode
+				isoCode: isoCode
 			},
 			success: function(result) {
-				console.log(result);
 				// This will set the promise state to fulfilled 
 				// and set the promise value to the result of the isoCode
-				let arr = { 
-					"continent": result['data'][0]['continent'], 
-					"capital": result['data'][0]['capital'], 
-					"languages": result['data'][0]['languages'],
-					"population": result['data'][0]['population'],
-                    "areaInSqKm": result['data'][0]['areaInSqKm'],
-                    "currencyCode": result['data'][0]['currencyCode'],
-                    "countryName": result['data'][0]['countryName']
-				}
-				resolve(arr);
+				resolve(result['data']);
 			},
 			error: function(jqXHR, textStatus, errorThrown) {
-				alert("The following error occured: " + jqXHR.status + " " + textStatus);
 			}
 		}); 
-
 	});
 }
 
-function getBorder(isoCode) {
-    return new Promise((resolve, reject) => {
-        $.ajax({
-            url: "./php/findBorder.php",
-            type: 'POST',
-            dataType: 'json',
-            data: {
-                isoCode: isoCode
-            },
-            success: function(result) {   
-                console.log(result['data']);
-                console.log("getBorder result type is below");
-                console.log(typeof result['data']);
-                resolve(result['data']);
-            },
-            error: function(jqXHR, textStatus, errorThrown) {
-                alert("The following error occured: " + jqXHR.status + " " + textStatus);
-            }
-        }); 
-    });
+async function displayCapitalWeather() {
+	map.spin(true);
+	const isoCode = $('#countrySelect').val()
+	const data = await getBorderAndCountryInfoIso(isoCode);
+	showCapitalWeather(data['capital']['coord']);
+	map.spin(false);
 }
 
-function plotBorder(border) {
-    if(countryFeatureGroup){
-        myMap.removeLayer(countryFeatureGroup);
-    }
-    countryFeatureGroup = L.geoJSON(border).addTo(myMap);
-    myMap.fitBounds(countryFeatureGroup.getBounds());
-}
+function showCapitalWeather(coords) {
 
-// Get isoCode and then get country info
-// Rename to initialisePage??
-async function initPage(lat, lng) {
-	console.log('Starting....')
-	let isoCode = await getUserLocIso(lat, lng);
-	console.log('This wont run until async thing done')
-	console.log(isoCode);
-	
-	let countryInfoArr = await getCountryInfo(isoCode);
-	console.log(countryInfoArr['capital']);
-    console.log(countryInfoArr['languages']);
-    $('#capitalCell').html(countryInfoArr['capital']);
-    $('#languagesCell').html(countryInfoArr['languages']);
-    $('#areaCell').html(countryInfoArr['areaInSqKm']);
-    $('#populationCell').html(countryInfoArr['population']);
-    $('#currencyCell').html(countryInfoArr['currencyCode']);
-    $('#countryNameCell').html(countryInfoArr['countryName']);
+	const lat = coords['lat'];
+	const lng = coords['lon'];
 
-    let borderGeoJson = await getBorder(isoCode);
-    console.log("Border geoJson logged below");
-    console.log(borderGeoJson);
-	plotBorder(borderGeoJson);
-	
-	$('#countrySelect').val(isoCode);
-	$('#countryFlag').attr('src', `https://www.countryflags.io/${isoCode}/flat/64.png`);
-	$("#myModal").modal({backdrop: false});
-}
-
-async function changeBorder() {
-    const selectedIsoCode = $('#countrySelect').val();
-    let countryInfoArr = await getCountryInfo(selectedIsoCode);
-    $('#capitalCell').html(countryInfoArr['capital']);
-    $('#languagesCell').html(countryInfoArr['languages']);
-    $('#areaCell').html(countryInfoArr['areaInSqKm']);
-    $('#populationCell').html(countryInfoArr['population']);
-    $('#currencyCell').html(countryInfoArr['currencyCode']);
-    $('#countryNameCell').html(countryInfoArr['countryName']);
-    let borderGeoJson = await getBorder(selectedIsoCode);
-	plotBorder(borderGeoJson);
-	$('#countryFlag').attr('src', `https://www.countryflags.io/${selectedIsoCode}/flat/64.png`);
-	$("#myModal").modal({backdrop: false});
-}
-
-function getWiki() {
-	const center = myMap.getCenter();
+	// Note the OpenWeather Pollution API requires GET requests (doesnt accept POST)
 	$.ajax({
-		url: "./php/getWiki.php",
-		type: 'POST',
+		url: "./php/getWeather.php",
+		type: 'GET',
 		dataType: 'json',
 		data: {
-			lat: center.lat,
-			lng: center.lng
+			lat: lat,
+			lng: lng
 		},
 		success: function(result) {
-			console.log(result);
+			const date = result['data']['weather']['datetime'].substring(0, 10);
+			const time = result['data']['weather']['datetime'].substring(11, 19);
+			const clouds = capitalizeFirstLetter(result['data']['weather']['clouds']);
+
+			const html = `<div class="card-body">
+					<h5 class="card-title text-center">Weather at ${lat.toFixed(4).toString()}, ${lng.toFixed(4).toString()}</h5>
+					<br><h3 class="card-subtitle mb-2 text-center" id="clouds">${clouds}</h3>
+					<h3 class="card-subtitle mb-2 text-center">${result['data']['weather']['temperature']} <sup>o</sup>C</h3>
+					<br><h6 class="card-subtitle mb-2 text-muted text-center">${result['data']['weather']['stationName']} weather station</h6>
+					<p class="card-text text-center">With ${result['data']['weather']['humidity']}% humidity and winds of ${result['data']['weather']['windSpeed']} km/h.
+					This reading was taken at ${time} on ${date}.</p>
+					<div class="text-center">
+					<button onclick="displayChart()" type="button" class="btn btn-primary"">View pollution forecast</button>
+					</div>
+				</div>`;
+
 			if (result.status.name == "ok") {
-				// ExtraMarkers
-				const wikiIcon = L.ExtraMarkers.icon({
-					icon: 'fa-wikipedia-w',
-					iconColer: 'white',
-					markerColor: 'black',
-					shape: 'square',
-					prefix: 'fa'
-				});
-
-				let coords = [];
-
-				console.log("Result length is ")
-				console.log(result['data'].length)
-
-				let markersClusterGroup2 = L.markerClusterGroup();
-
-				if(result['data'].length > 0) {
-					for(i = 0; i < result['data'].length; i++) {
-
-						const lat = result['data'][i]['lat'];
-						const lng = result['data'][i]['lng'];
-	
-						coords[i] = [lat, lng];
-						
-						const html = `<h4>${result['data'][i]['title']}</h4>
-						<p>${result['data'][i]['summary']}</p>
-						<a href="https://${result['data'][i]['wikipediaUrl']}">View Wikipedia article</a>`;
-	
-						// Create markers and add content
-						const marker = L.marker([lat, lng], {icon: wikiIcon});
-						marker.bindPopup(html);
-						
-						// Set onClick handler for markers
-						marker.on('click', onClick);
-						// Add marker to cluster group
-						markersClusterGroup2.addLayer(marker);
-
-					}
-
-					// Add cluster group to map
-					myMap.addLayer(markersClusterGroup2);
-
-					myMap.flyToBounds(coords, {padding: [30, 30]});
-				}
-
-				if(result['data'].length == 0) {
-					$("#noWikiModal").modal({backdrop: false});
-				}
+				popup
+					.setLatLng([lat, lng])
+					.setContent(html)
+					.openOn(map);
 			}
+
+			json = result['data']['pollution'];
 		},
 		error: function(jqXHR, textStatus, errorThrown) {
-			console.log(textStatus);
+			
+			const html = `<p>Sorry, no weather info at this location. Try clicking somewhere else.</p>`;
+
+			popup
+					.setLatLng([lat, lng])
+					.setContent(html)
+					.openOn(map);
 		}
 	});
 }
 
-function getEarthquakes() {
-	const center = myMap.getCenter();
-	$.ajax({
-		url: "./php/getEarthquakes.php",
-		type: 'POST',
-		dataType: 'json',
-		data: {
-			north: center.lat + 4,
-			south: center.lat - 4,
-			east: center.lng + 4,
-			west: center.lng - 4
-		},
-		success: function(result) {
-			console.log(result);
-			if (result.status.name == "ok") {
-				// ExtraMarkers
-				const earthquakeMarker = L.ExtraMarkers.icon({
-					icon: 'fa-globe',
-					iconColer: 'white',
-					markerColor: 'black',
-					shape: 'square',
-					prefix: 'fa'
-				});
-
-				let coords = [];
-
-				let markersClusterGroup3 = L.markerClusterGroup();
-
-				if(result['data'].length > 0) {
-					for(i = 0; i < result['data'].length; i++) {
-					
-						const lat = result['data'][i]['lat'];
-						const lng = result['data'][i]['lng'];
-						const date = result['data'][i]['datetime'].substring(0, 10);
-						const time = result['data'][i]['datetime'].substring(11, 19);
-	
-						coords[i] = [lat, lng];
-
-						// Create markers and add content
-						const marker = L.marker([lat, lng], {icon: earthquakeMarker});
-
-						const html = `<h5>Earthquake information</h5>
-						<table class="table">
-							<tr>
-								<td>Date: </td>
-								<td>${date}</td>
-							</tr>
-							<tr>
-								<td>Time: </td>
-								<td>${time}</td>
-							</tr>
-							<tr>
-								<td>Depth: </td>
-								<td>${result['data'][i]['depth']}</td>
-							</tr>
-							<tr>
-								<td>Magnitude: </td>
-								<td>${result['data'][i]['magnitude']}</td>
-							</tr>
-						</table>`;
-
-						marker.bindPopup(html);
-						marker.on('click', onClick);
-						
-						// Add marker to cluster group
-						markersClusterGroup3.addLayer(marker);
-					}
-
-					// Add cluster group to map
-					myMap.addLayer(markersClusterGroup3);
-	
-					myMap.flyToBounds(coords, {padding: [30, 30]});
-				}
-
-				// CHeck if array is emtpy (same in wiki)
-				if(result['data'].length == 0) {
-					$("#noEarthquakesModal").modal({backdrop: false});
-				}
-			}
-		},
-		error: function(jqXHR, textStatus, errorThrown) {
-			console.log(textStatus);
-		}
-	});
-}
-
-function onClick(e) {
-	e.target.getPopup().openOn(myMap);
-}
-
-
-function getPOI() {
-	const center = myMap.getCenter();
-	$.ajax({
-		url: "./php/getPOI.php",
-		type: 'POST',
-		dataType: 'json',
-		data: { 
-			box: `{
-				"boundingBox": {
-					"ul": {
-						"lat": ${center.lat + 2},
-						"lng": ${center.lng + 2}
-					},
-					"lr": {
-						"lat": ${center.lat - 2},
-						"lng": ${center.lng - 2}
-					}
-				},
-				"options": {}
-			}`
-		},
-		success: function(result) {
-			console.log(result);
-			if (result.status.name == "ok") {
-				// ExtraMarkers
-				const poiMarker = L.ExtraMarkers.icon({
-					icon: 'fa-map-marker-alt',
-					iconColer: 'white',
-					markerColor: 'black',
-					shape: 'square',
-					prefix: 'fa'
-				});
-
-				let coords = [];
-
-				let markersClusterGroup4 = L.markerClusterGroup();
-
-				if(result['data'].length > 0) {
-					for(i = 0; i < result['data'].length; i++) {
-					
-						const lat = result['data'][i]['shapePoints'][0];
-						const lng = result['data'][i]['shapePoints'][1];
-						const name = result['data'][i]['name'];
-
-						const address = result['data'][i]['fields']['address'];
-						const city = result['data'][i]['fields']['city'];
-						const phone = result['data'][i]['fields']['phone'];
-
-						let html;
-
-						// Define html to be included in pop up
-						if(address && city && phone) {
-							html = `<h5>Point of interest</h5>
-								<table class="table">
-									<tr>
-										<td>Name: </td>
-										<td>${name}</td>
-									</tr>
-									<tr>
-										<td>Address: </td>
-										<td>${address}</td>
-									</tr>
-									<tr>
-										<td>City: </td>
-										<td>${city}</td>
-									</tr>
-									<tr>
-										<td>Phone: </td>
-										<td>${phone}</td>
-									</tr>
-									<tr>
-										<td>Latitude: </td>
-										<td>${lat}</td>
-									</tr>
-									<tr>
-										<td>Longitude: </td>
-										<td>${lng}</td>
-									</tr>
-								</table>`;
-						} else {
-							html = `<h5>${name}</h5>
-							<p>Latitude: ${lat}</p>
-							<p>Longitude: ${lng}</p>
-							<p>That's all the information we have about this point of interest. Places in North America have more information.</p>`;
-						}
-	
-						coords[i] = [lat, lng];
-
-						// Create markers and add content
-						const marker = L.marker([lat, lng], {icon: poiMarker});
-						marker.bindPopup(html).openPopup();
-						// Set onClick handler for markers
-						marker.on('click', onClick);
-						
-						// Add marker to cluster group
-						markersClusterGroup4.addLayer(marker);
-					}
-
-					// Add cluster group to map
-					myMap.addLayer(markersClusterGroup4);
-	
-					myMap.flyToBounds(coords, {padding: [30, 30]});
-				}
-
-				// CHeck if array is emtpy (same in wiki)
-				if(result['data'].length == 0) {
-					$("#noPOIsModal").modal({backdrop: false});
-				}
-			}
-		},
-		error: function(jqXHR, textStatus, errorThrown) {
-			console.log(textStatus);
-			$("#noPOIsModal").modal({backdrop: false});
-		}
-	});
-}
-
-
-
-// getAddress is commented out because it so rarely returns an address!
-
-// function getAddress() {
-// 	var center = myMap.getCenter();
-// 	console.log("lat is")
-// 	console.log(center.lat);
-// 	console.log("lng is")
-// 	console.log(center.lng);
-
-// 	$.ajax({
-// 		url: "./php/getAddress.php",
-// 		type: 'POST',
-// 		dataType: 'json',
-// 		data: {
-// 			lat: center.lat,
-// 			lng: center.lng
-// 		},
-// 		success: function(result) {
-// 			console.log(result);
-// 			if (result.status.name == "ok") {
-// 				// ExtraMarkers
-
-// 				console.log("Address success handler")
-// 				var addressMarker = L.ExtraMarkers.icon({
-// 					icon: 'fa-globe',
-// 					iconColer: 'white',
-// 					markerColor: 'black',
-// 					shape: 'square',
-// 					prefix: 'fa'
-// 				});
-
-// 				if(result['data']) {
-// 					console.log("Address success handler if clause")
-// 					var lat = result['data']['lat'];
-// 					var lng = result['data']['lng'];
-
-// 					var html = `<h5>Address</h5>
-// 					<table class="table">
-// 						<tr>
-// 							<td>House Number: </td>
-// 							<td>${result['data']['houseNumber']}</td>
-// 						</tr>
-// 						<tr>
-// 							<td>Street: </td>
-// 							<td>${result['data']['street']}</td>
-// 						</tr>
-// 						<tr>
-// 							<td>Locality: </td>
-// 							<td>${result['data']['locality']}</td>
-// 						</tr>
-// 						<tr>
-// 							<td>Country Code: </td>
-// 							<td>${result['data']['countryCode']}</td>
-// 						</tr>
-// 					</table>`;
-
-// 					// Create markers and add content
-// 					var marker = L.marker([lat, lng], {icon: addressMarker}).addTo(myMap);
-// 					marker.bindPopup(html).openPopup();
-
-// 					// Set onClick handler for markers
-// 					marker.on('click', onClick);
-
-// 					function onClick(e) {
-// 						var popup = e.target.getPopup();
-// 						var content = popup.getContent();
-// 						console.log(content);
-// 					}
-					
-// 					var latlng = L.latLng(lat, lng);
-// 					myMap.flyTo(latlng);
-// 				}
-
-// 				// CHeck if array is emtpy (same in wiki)
-// 				if(result['data'].length == 0) {
-// 					$("#noAddressModal").modal({backdrop: false});
-// 				}
-// 			}
-// 		},
-// 		error: function(jqXHR, textStatus, errorThrown) {
-// 			// Sometimes returns null so add pop up to say no weather info?
-// 			console.log(textStatus);
-// 		}
-// 	});
-// }
 
 // onMapClick function
 function onMapClick(e) {
 
+	// Note the OpenWeather Pollution API requires GET requests (doesnt accept POST)
 	$.ajax({
 		url: "./php/getWeather.php",
-		type: 'POST',
+		type: 'GET',
 		dataType: 'json',
 		data: {
 			lat: e.latlng.lat,
 			lng: e.latlng.lng
 		},
 		success: function(result) {
-			console.log(result);
 
-			const html = `<table>
-					<thead>
-						<tr>
-							<th>Metric</th>
-							<th>Observation</th>
-						</tr>
-					</thead>
-					<tbody>
-						<tr>
-							<td>Latitude</td>
-							<td>${e.latlng.lat.toFixed(2).toString()}</td>
-						</tr>
-						<tr>
-							<td>Longitude</td>
-							<td>${e.latlng.lng.toFixed(2).toString()}</td>
-						</tr>
-						<tr>
-							<td>Clouds</td>
-							<td>${result['data']['clouds']}</td>
-						</tr>
-						<tr>
-							<td>Temperature</td>
-							<td>${result['data']['temperature']} <sup>o</sup>C</td>
-						<tr>
-						<tr>
-							<td>Humidity</td>
-							<td>${result['data']['humidity']}%</td>
-						</tr>
-						<tr>
-							<td>Wind speed</td>
-							<td>${result['data']['windSpeed']}</td>
-						</tr>
-					</tbody>
-				</table>`;
+			const date = result['data']['weather']['datetime'].substring(0, 10);
+			const time = result['data']['weather']['datetime'].substring(11, 19);
+			const clouds = capitalizeFirstLetter(result['data']['weather']['clouds']);
+
+			const html = `<div class="card-body">
+					<h5 class="card-title text-center">Weather at ${e.latlng.lat.toFixed(4).toString()}, ${e.latlng.lng.toFixed(4).toString()}</h5>
+					<br><h3 class="card-subtitle mb-2 text-center" id="clouds">${clouds}</h3>
+					<h3 class="card-subtitle mb-2 text-center">${result['data']['weather']['temperature']} <sup>o</sup>C</h3>
+					<br><h6 class="card-subtitle mb-2 text-muted text-center">${result['data']['weather']['stationName']} weather station</h6>
+					<p class="card-text text-center">With ${result['data']['weather']['humidity']}% humidity and winds of ${result['data']['weather']['windSpeed']} km/h.
+					This reading was taken at ${time} on ${date}.</p>
+					<div class="text-center">
+					<button onclick="displayChart()" type="button" class="btn btn-primary"">View pollution forecast</button>
+					</div>
+				</div>`;
 
 			if (result.status.name == "ok") {
 				popup
 					.setLatLng(e.latlng)
 					.setContent(html)
-					.openOn(myMap);
+					.openOn(map);
 			}
+
+			json = result['data']['pollution'];
 		},
 		error: function(jqXHR, textStatus, errorThrown) {
 			
@@ -660,7 +883,96 @@ function onMapClick(e) {
 			popup
 					.setLatLng(e.latlng)
 					.setContent(html)
-					.openOn(myMap);
+					.openOn(map);
+		}
+	});
+}
+
+function capitalizeFirstLetter(string) {
+	return string.charAt(0).toUpperCase() + string.slice(1);
+}
+
+function timeConverter(UNIX_timestamp){
+	var a = new Date(UNIX_timestamp * 1000);
+
+	var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+	var month = months[a.getMonth()];
+	var date = a.getDate();
+	var hour = a.getHours();
+	var time = date + ' ' + month + ' ' + hour + ':00';
+	return time;
+}
+
+function displayHowToUse() {
+	$('#howToUseModal').modal({backdrop: false});
+}
+
+function displayChart() {
+	drawChart();
+	$('#chartModalTitle').html(`Forecast for ${json['coord']['lat'].toFixed(2)}, ${json['coord']['lon'].toFixed(2)}`);
+	$('#chartModal').modal({backdrop: false});
+}
+
+function drawChart() {
+	let timestamps = [];
+	let coPollution = [];
+	let no2Pollution = [];
+	let o3Pollution = [];
+
+	for(i = 0; i < json['list'].length; i++) {
+		const dateTimeStr = timeConverter(json['list'][i]['dt'])
+		timestamps[i] = dateTimeStr;
+		coPollution[i] = json['list'][i]['components']['co'];
+		no2Pollution[i] = json['list'][i]['components']['no2'];
+		o3Pollution[i] = json['list'][i]['components']['o3'];
+	}
+
+	var ctx = document.getElementById('myChart').getContext('2d');
+	var myChart = new Chart(ctx, {
+		type: 'line',
+		data: {
+			labels: timestamps,
+			datasets: [{
+				label: 'CO',
+				data: coPollution,
+				fill: false,
+				backgroundColor: 'rgba(0,0,255,1)',
+				borderColor: 'rgba(0,0,255,1)',
+				borderWidth: 1
+			}, {
+				label: 'NO2',
+				data: no2Pollution,
+				fill: false,
+				backgroundColor: 'rgba(0,255,0,1)',
+				borderColor: 'rgba(0,255,0,1)',
+				borderWidth: 1
+			}, {
+				label: 'O3',
+				data: o3Pollution,
+				fill: false,
+				backgroundColor: 'rgba(255,0,0,1)',
+				borderColor: 'rgba(255,0,0,1)',
+				borderWidth: 1
+			}]
+		},
+		options: {
+			scales: {
+				yAxes: [{
+					ticks: {
+						beginAtZero: true
+					},
+					scaleLabel: {
+						display: true,
+						labelString: 'μg/m3'
+					}
+				}],
+				xAxes: [{
+					ticks: {
+						autoSkip: true,
+						maxTicksLimit: 6
+					}
+				}]
+			}
 		}
 	});
 }
