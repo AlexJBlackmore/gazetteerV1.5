@@ -16,7 +16,7 @@ $ch1 = curl_init();
 curl_setopt($ch1, CURLOPT_SSL_VERIFYPEER, false);
 curl_setopt($ch1, CURLOPT_RETURNTRANSFER, true);
 
-$url5 = 'http://api.geonames.org/wikipediaBoundingBoxJSON?north=' . $north . '&south=' . $south . '&east=' . $east . '&west=' . $west . '&maxRows=500&username=alexblackmore';
+$url5 = 'http://api.geonames.org/wikipediaBoundingBoxJSON?north=' . $north . '&south=' . $south . '&east=' . $east . '&west=' . $west . '&maxRows=50&username=alexblackmore';
 
 curl_setopt($ch1, CURLOPT_URL,$url5);
 $result5=curl_exec($ch1);

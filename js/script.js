@@ -14,6 +14,7 @@ $(window).on('load', async function () {
 			$(this).remove();      
 		});    
 	}
+
 	
 	// Create map
 	const attribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
@@ -35,7 +36,14 @@ $(window).on('load', async function () {
 		url: "./php/parseJson.php",
 		dataType: 'json',
 		success: function(result) {
+			
+			console.log("Looksd here!");
+			console.log(result);
 			for (i = 0; i < result['data'].length; i++) {
+				if(result['data'][i]['name'] == "Kosovo") {
+					// Don't add Kosovo to select because it has a number as an iso code!
+					continue;
+				}
 				$('#countrySelect').append($('<option>', {value:result['data'][i]['isoCode'], text:result['data'][i]['name']}));
 			}
 		},
@@ -49,7 +57,7 @@ $(window).on('load', async function () {
 		enableHighAccuracy: true,
 		timeout: 20000,
 		maximumAge: 0
-	};
+	}
 
 	// Get user location
 	navigator.geolocation.getCurrentPosition(getPosSuccess, getPosError, options);
@@ -169,6 +177,8 @@ function callWikisAPI(countryInfo) {
 	const west = countryInfo['west'];
 	const isoCode = countryInfo['countryCode'];
 
+	console.log(`North is ${north} - south is ${south} - east is ${east}  -west is ${west}`);
+
 	return new Promise((resolve, reject) => {
 		$.ajax({
 			url: "./php/callWikisAPI.php",
@@ -223,7 +233,11 @@ function displayModal(data) {
 	const capital = data['countryInfo'][0]['capital'];
 	const population = data['countryInfo'][0]['population'];
 	const area = data['countryInfo'][0]['areaInSqKm'];
-	const languages = data['countryInfo'][0]['languages'];
+	let languages = data['countryInfo'][0]['languages'];
+	if(languages.length > 25) {
+		// Reduce string length so it doesn't overflow
+		languages = languages.substring(0, 24);
+	}
 	const isoCode = data['countryInfo'][0]['countryCode'];
 	// Use currency code as fallback value for currency
 	let currency = data['countryInfo'][0]['currencyCode'];

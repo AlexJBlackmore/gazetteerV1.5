@@ -17,7 +17,7 @@ curl_setopt($ch1, CURLOPT_SSL_VERIFYPEER, false);
 curl_setopt($ch1, CURLOPT_RETURNTRANSFER, true);
 
 // Obtain earthquakes within bounding box
-$url3='http://api.geonames.org/earthquakesJSON?north=' . $north . '&south=' . $south . '&east=' . $east . '&west=' . $west . '&username=alexblackmore&style=full';
+$url3='http://api.geonames.org/earthquakesJSON?north=' . $north . '&south=' . $south . '&east=' . $east . '&west=' . $west . '&maxRows=10&username=alexblackmore&style=full';
 
 curl_setopt($ch1, CURLOPT_URL,$url3);
 $result3=curl_exec($ch1);
